@@ -2,32 +2,43 @@
 
 
 ```
-projet : site de streaming de films et séries accessible uniquement par vpn.
+projet : Vpn adblocker local
 ```
 
 #### SERVEUR VPN
 
 ```
--ubuntu debian
--IP publique 
--Firewall
+-rocky linux
+-IP privée
 -gestion des logs
--Wireguard
+-wireguard
 -gestion des certificats
 ```
-
 
 #### ROUTEUR 
 
 ```
--ubuntu debian
--Firewall
+-rocky linux
+-IP privée
 -DNS
--DHCP
 -Accès Internet
--portail captif
 ```
 
+#### Client Vpn 
 
+```
+-ubuntu debian
+-IP privée
+-Accès au adblock via vpn
+-Connexion host-only via routeur
+```
 
-###### si possible on pourrait faire un seveur web qui sera accessible que par le serveur vpn
+#### Adblocker Pi-hole
+
+```
+-rocky linux
+-IP privée
+-Reçu de DNS du Client
+-Bloque les dns queries
+```
+
