@@ -4,10 +4,22 @@
 
 ## Réseau sur 10.6.1.10, en 4 machines :
 
-- Serveur = Rocky linux
+
+- ServeurDnsNAT = Rocky linux
 
 
 CONFIG
+
+
+Créer l'ip statique :
+
+
+```
+nano /etc/sysconfig/network-scripts/ifcfg-enp0s9
+```
+
+
+
 ```
 [root@serveur gabriel]# ip a
 1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
@@ -33,9 +45,76 @@ CONFIG
 ```
 
 
-- Client 1 = Debian  
+Configurer le script pour la sauvegarde du site web : 
+
+```
+#!/bin/bash
+# Script de sauvegarde ServeurWeb -> Rocky
+# Auteur : Gabriel Cochet
+# Objectif : Sauvegarde toutes les heures avec rotation
+
+# Variables
+SRC="gabriel@10.6.1.11:/var/www/"
+DEST="/srv/backups/ServeurWeb"
+LOG="/var/log/backup-ServeurWeb.log"
+DATE=$(date +%Y-%m-%d_%H-%M)
+
+# Création du répertoire si inexistant
+mkdir -p $DEST
+
+# Sauvegarde avec rsync
+rsync -avz --delete \
+    --exclude='*.log' \
+    --exclude='cache/' \
+    -e "ssh -i /root/.ssh/id_ed25519_nopass" \
+    $SRC $DEST/$DATE >> $LOG 2>&1
+
+# Vérification du succès
+if [ $? -eq 0 ]; then
+    echo "Sauvegarde terminée à $DATE" >> $LOG
+else
+    echo "Erreur de sauvegarde à $DATE" >> $LOG
+fi
+
+# Rotation : garder les 24 dernières sauvegardes
+cd $DEST
+ls -1t | tail -n +25 | xargs rm -rf
+```
+
+
+Attribuer les droits au script sauvegarde servWeb :
+
+```
+chmod 700 /usr/local/bin/backup-ServeurWeb.sh
+```
+
+Mettre en place le script dans le crontab :
+
+```
+crontab -e
+```
+
+```
+*/5 * * * * /usr/local/bin/backup-ServeurWeb.sh
+```
+
+
+Vérifier les logs de sauvegardes du site web ..
+
+
+```
+cat /var/log/backup-ServeurWeb.log
+```
+
+
+
+
+- Client = Debian  
+
+
 
 CONFIG
+
 
 ```
 root@CLIENT1:/home/gabriel# ip a
@@ -55,9 +134,11 @@ root@CLIENT1:/home/gabriel# ip a
 ```
 
 
-- Client 2 = debian
+- ServeurWeb = debian 
+
 
 CONFIG
+
 
 ```
 root@CLIENT2:/home/gabriel# ip a
@@ -75,5 +156,44 @@ root@CLIENT2:/home/gabriel# ip a
     inet6 fe80::a00:27ff:fe0a:2d1d/64 scope link proto kernel_ll
        valid_lft forever preferred_lft forever
 ```
+
+
+- VM NAS = Rocky linux
+
+
+CONFIG
+
+
+```
+[root@NAS gabriel]# ip a
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host
+       valid_lft forever preferred_lft forever
+2: enp0s9: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group default qlen 1000
+    link/ether 08:00:27:ac:8b:b0 brd ff:ff:ff:ff:ff:ff
+    inet 10.6.1.17/24 brd 10.6.1.255 scope global noprefixroute enp0s9
+       valid_lft forever preferred_lft forever
+    inet6 fe80::a00:27ff:feac:8bb0/64 scope link
+       valid_lft forever preferred_lft forever
+```
+
+
+
+## Setup du serveur DNS sur 
+
+
+
+
+```
+
+```
+
+
+
+## Setup du serveur Web 
+
 
 
