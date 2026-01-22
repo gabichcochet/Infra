@@ -731,3 +731,209 @@ Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
 MariaDB [(none)]>
 ```
 
+# Infrastructure de Sauvegarde (SRVWEB / SRVDB → VMBACKUP)
+
+Cette infrastructure met en place un système de sauvegarde automatisé pour :
+
+SRVWEB : sauvegarde des fichiers du site web (/var/www/html)
+SRVDB : sauvegarde de la base de données MariaDB (infra_db)
+VMBACKUP : serveur central de stockage des sauvegardes
+
+Les sauvegardes sont transférées via SSH sécurisé, sans mot de passe, et exécutées automatiquement via cron.
+
+## Configuration réseau
+
+| Interface | Type VirtualBox | Rôle | Adresse IP |
+|----------|------------------|------|-------------|
+| **enp0s3** | Réseau interne | LAN | 192.168.10.40/24|
+| **enp0s8** | Host‑Only | Administration SSH depuis Windows | DHCP (192.168.56.116) |
+
+
+
+```bash
+# This file describes the network interfaces available on your system
+# and how to activate them. For more information, see interfaces(5).
+
+source /etc/network/interfaces.d/*
+
+# Interface LAN (vers le routeur)
+auto enp0s3
+iface enp0s3 inet static
+    address 192.168.10.40
+    netmask 255.255.255.0
+    gateway 192.168.10.1
+    dns-nameservers 192.168.10.5
+
+# Interface Host-Only (SSH)
+auto enp0s8
+iface enp0s8 inet dhcp
+```
+
+```bash
+root@SRVBACKUP:~# systemctl restart networking
+```
+
+
+### Installer rsync 
+
+```bash
+root@SRVBACKUP:~# apt install rsync openssh-server
+```
+
+### Arborescence de sauvegarde
+
+```bash
+root@SRVBACKUP:/# mkdir -p /backup/srvweb
+root@SRVBACKUP:/# mkdir -p /backup/srvdb
+root@SRVBACKUP:/# mkdir -p /backup/configs
+chmod -R 700 /backup
+```
+
+### Création d’un utilisateur dédié aux sauvegardes
+
+```bash
+root@SRVBACKUP:/# adduser backup
+root@SRVBACKUP:/# passwd backup
+```
+
+### Script de sauvegarde depuis SRVWEB
+
+Sur SRVWEB, créer :
+
+```bash
+nano /usr/local/bin/backup_web.sh
+```
+
+Contenu : 
+
+```bash
+#!/bin/bash
+echo "Backup web lancé à $(date)" >> /var/log/backup_web.log
+rsync -avz /var/www/html/ backup@192.168.10.40:/backup/srvweb/
+```
+
+Rendre exécutable :
+
+```bash
+chmod +x /usr/local/bin/backup_web.sh
+```
+
+
+### Script de sauvegarde SQL depuis SRVDB
+
+Sur SRVDB, créer :
+
+```bash
+nano /usr/local/bin/backup_db.sh
+```
+
+Contenu :
+
+```bash
+#!/bin/bash
+echo "Backup lancé à $(date)" >> /var/log/backup_db.log
+mysqldump -u root -p'TonMotDePasse' infra_db > /tmp/infra_db.sql
+rsync -avz /tmp/infra_db.sql backup@192.168.10.40:/backup/srvdb/
+rm /tmp/infra_db.sql
+```
+
+Rendre exécutable :
+
+```bash
+chmod +x /usr/local/bin/backup_db.sh
+```
+
+### Automatisation via cron 
+
+Sur SRVWEB :
+
+```bash
+crontab -e
+```
+
+```bash
+0 2 * * * /usr/local/bin/backup_web.sh
+```
+
+Sur SRVDB :
+
+```bash
+crontab -e
+```
+
+```bash
+0 3 * * * /usr/local/bin/backup_db.sh
+```
+
+Assurer vous que les connexion SSH depuis les VM Web et VM DATA qu'elles puissent accéder à la VM Backup sans demande du mot de passe :
+
+Générer une clé SSH sur SRVDB :
+
+```bash
+ssh-keygen -t ed25519 -C "backup-db"
+```
+
+Quand il est demandé un mot de passe tapez "entrée" pour rendre le mot de passe vide.
+
+
+```bash
+ssh-copy-id backup@192.168.10.40
+```
+
+Tester le :
+
+```bash
+ssh backup@192.168.10.40
+```
+
+Générer une clé SSH sur SRVWEB :
+
+```bash
+ssh-keygen -t ed25519 -C "backup-web"
+```
+
+Quand il est demandé un mot de passe tapez "entrée" pour rendre le mot de passe vide.
+
+
+```bash
+ssh-copy-id backup@192.168.10.40
+```
+
+### Créer le dossier .ssh sur la VM BACKUP
+
+```bash
+mkdir -p /var/backups/.ssh
+chown backup:backup /var/backups/.ssh
+chmod 700 /var/backups/.ssh
+```
+
+
+### Tests finaux
+
+Sur la VM WEB :
+
+```bash
+root@VMBACKUP:/home/gabriel# rm /backup/srvweb/index.html
+```
+
+```bash
+root@VMBACKUP:/home/gabriel# ls -lh /backup/srvweb/
+total 8,0K
+-rw-r--r-- 1 backup backup 31 21 janv. 15:54 index.html
+-rw-rw-r-- 1 backup backup 47 21 janv. 16:28 index.htmlping
+```
+
+Sur la VM DATA :
+
+```bash
+root@VMBACKUP:/home/gabriel# rm /backup/srvdb/infra_db.sql
+```
+
+
+```bash
+root@VMBACKUP:/home/gabriel# ls -lh /backup/srvdb/
+total 12K
+-rw-r--r-- 1 backup backup   38 10 déc.  09:16 index.html
+-rw-r--r-- 1 backup backup  615  8 déc.  11:28 index.nginx-debian.html
+-rw-r--r-- 1 backup backup 2,1K 22 janv. 20:19 infra_db.sql
+```
