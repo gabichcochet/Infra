@@ -34,15 +34,12 @@ Pourquoi Debian ?
 -Très utilisé dans les environnements web professionnels
 
 4. VM-SRV-DATA (Base de données)
-OS : Rocky Linux
+OS : Debian
 
-Pourquoi Rocky Linux ?
--Compatible RHEL → standard des entreprises
--Très robuste pour les services critiques (DB, stockage)
--Cycle de support long (10 ans)
--Optimisé pour MariaDB/PostgreSQL
--Très utilisé dans les datacenters et environnements VMware/Proxmox
-
+Pourquoi Debian ?
+-MariaDB est parfaitement supporté
+-Debian applique des politiques de sécurité strictes, parfait pour un serveur SQL.
+-Cohérence avec tes autres VMs
 
 5. VM-BACKUP
 OS : Debian
@@ -180,7 +177,7 @@ root@ROUTEUR:/home/gabriel# iptables -t nat -L -v -n
 root@ROUTEUR:/home/gabriel# systemctl status netfilter-persistent
 ```
 
-# 🖧 VM SERVEUR DNS — Configuration Complète
+# VM SERVEUR DNS — Configuration Complète
 
 ## Rôle de la VM DNS 
 
@@ -354,7 +351,7 @@ janv. 21 15:06:40 DNSERV named[2838]: network unreachable resolving './NS/IN': 2
 root@DNSERV:/home/gabriel# ss -tulpn | grep :53
 ```
 
-# 🖧 VM SERVEUR WEB — Configuration Complète
+# VM SERVEUR WEB — Configuration Complète
 
 ## Rôle de la VM SRVWEB
 La VM SRVWEB héberge le serveur web interne de l’infrastructure.
@@ -533,3 +530,204 @@ PING 192.168.10.5 (192.168.10.5) 56(84) bytes of data.
 2 packets transmitted, 2 received, 0% packet loss, time 1003ms
 rtt min/avg/max/mdev = 3.081/3.147/3.213/0.066 ms
 ```
+
+# VM SERVEUR DE BASE DE DONNÉES — Configuration Complète
+
+
+## Rôle de la VM SRVDB
+
+La VM SRVDB héberge le serveur de base de données MariaDB de l’infrastructure.
+Elle assure plusieurs fonctions essentielles :
+
+Fournir un service SQL fiable pour les applications hébergées sur SRVWEB
+
+Centraliser les données du projet dans une base unique (infra_db)
+
+Garantir un accès sécurisé grâce à un utilisateur dédié (webuser)
+
+Limiter l’accès SQL uniquement au serveur web (192.168.10.20)
+
+Être administrée facilement via SSH grâce à une interface Host‑Only
+
+Cette VM est un élément critique de l’infrastructure : elle stocke les données et assure la cohérence applicative.
+
+## Configuration réseau
+
+### La VM SRVDB possède 2 interfaces réseau :
+
+| Interface | Type VirtualBox | Rôle | Adresse IP |
+|----------|------------------|------|-------------|
+| **enp0s3** | Réseau interne | LAN | 192.168.10.30/24|
+| **enp0s9** | Host‑Only | Administration SSH depuis Windows | DHCP (192.168.56.114) |
+
+### Configuration des interfaces dans /etc/network/interfaces
+
+```bash
+# This file describes the network interfaces available on your system
+# and how to activate them. For more information, see interfaces(5).
+
+source /etc/network/interfaces.d/*
+
+# Interface LAN (vers le routeur)
+auto enp0s3
+iface enp0s3 inet static
+    address 192.168.10.30
+    netmask 255.255.255.0
+    gateway 192.168.10.1
+
+# Interface Host-Only (SSH)
+auto enp0s9
+iface enp0s9 inet dhcp
+```
+
+```bash
+root@VMSERVDATA:/# systemctl restart networking
+```
+
+### Configuration DNS
+
+Rajouter dans `nano /etc/resolv.conf.head` de la VM Data : 
+
+```bash
+nameserver 192.168.10.5
+```
+
+### Installation de MariaDB Server
+
+```bash
+root@VMSERVDATA:/# apt install mariadb-server
+```
+
+### Vérification du service :
+
+```bash
+root@VMSERVDATA:/# systemctl status mariadb
+```
+
+### Configuration de l’écoute réseau (bind-address) :
+
+```bash
+root@VMSERVDATA:/# nano /etc/mysql/mariadb.conf.d/50-server.cnf
+```
+
+### Éditer `nano /etc/mysql/mariadb.conf.d/50-server.cnf`:
+
+Modifier : 
+
+```bash
+bind-address = 127.0.0.1
+```
+
+pour : 
+
+```bash
+bind-address = 192.168.10.30
+```
+
+Redémarrer :
+
+```bash
+root@VMSERVDATA:/# systemctl restart mariadb
+```
+
+Vérification :
+
+```bash
+root@VMSERVDATA:/home/gabriel#  ss -tulpn | grep 3306
+tcp   LISTEN 0      80                          192.168.10.30:3306       0.0.0.0:*    users:(("mariadbd",pid=6288,fd=28))
+```
+
+## Sécurisation de MariaDB
+
+Définir un mot de passe root :
+
+```bash
+ALTER USER 'root'@'localhost' IDENTIFIED BY '1234';
+FLUSH PRIVILEGES;
+```
+
+Supprimer les utilisateurs anonymes :
+
+```bash
+DELETE FROM mysql.user WHERE User='';
+FLUSH PRIVILEGES;
+```
+
+Interdire l’accès root distant :
+
+```bash
+DELETE FROM mysql.user WHERE User='root' AND Host!='localhost';
+FLUSH PRIVILEGES;
+```
+
+Supprimer la base de test :
+
+```bash
+DROP DATABASE IF EXISTS test;
+FLUSH PRIVILEGES;
+```
+
+## Création de la base et de l’utilisateur applicatif
+
+Connexion :
+
+```bash
+mysql -u root -p
+```
+
+
+Créer la base :
+
+
+```bash
+CREATE DATABASE infra_db;
+```
+
+Créer l’utilisateur dédié à SRVWEB :
+
+
+```bash
+CREATE USER 'webuser'@'192.168.10.20' IDENTIFIED BY 'MotDePasseWeb';
+GRANT ALL PRIVILEGES ON infra_db.* TO 'webuser'@'192.168.10.20';
+FLUSH PRIVILEGES;
+```
+
+Vérification :
+
+```bash
+SELECT User, Host FROM mysql.user;
+```
+
+## Configuration du firewall UFW 
+
+La politique par défaut est DROP, donc il faut autoriser SRVWEB.
+Autoriser le port SQL uniquement pour SRVWEB :
+
+```bash
+root@VMSERVDATA:/# ufw allow from 192.168.10.20 to any port 3306 proto tcp
+```
+
+```bash
+root@VMSERVDATA:/# ufw status numbered
+```
+
+## Test de connexion depuis SRVWEB
+
+```bash
+root@SERVWEB:/# mysql -h 192.168.10.30 -u webuser -p
+```
+
+```bash
+root@SERVWEB:/home/gabriel# mysql -h 192.168.10.30 -u webuser -p
+Enter password:
+Welcome to the MariaDB monitor.  Commands end with ; or \g.
+Your MariaDB connection id is 20
+Server version: 11.8.3-MariaDB-0+deb13u1 from Debian -- Please help get to 10k stars at https://github.com/MariaDB/Server
+
+Copyright (c) 2000, 2018, Oracle, MariaDB Corporation Ab and others.
+
+Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
+
+MariaDB [(none)]>
+```
+
