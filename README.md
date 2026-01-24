@@ -924,3 +924,662 @@ total 12K
 -rw-r--r-- 1 backup backup 2,1K 22 janv. 20:19 infra_db.sql
 ```
 
+# Conteneurisation sur la VM BACKUP
+
+## Installation de Docker
+
+```bash
+curl -fsSL https://get.docker.com | sh
+usermod -aG docker root
+```
+
+```bash
+docker version
+docker run hello-world
+```
+
+
+## Mise en place de Restic (conteneurisé)
+
+```bash
+mkdir -p /srv/backup/{data,config,logs}
+```
+
+```bash
+echo "changeme" > /srv/backup/config/restic.pass
+chmod 600 /srv/backup/config/restic.pass
+```
+
+```bash
+docker-compose.yml
+```
+
+```bash
+services:
+restic:
+image: restic/restic:latest
+volumes:
+- ./data:/backup
+- /backup/srvweb:/data-srvweb:ro
+- /backup/srvdb:/data-srvdb:ro
+- ./config:/config:ro
+environment:
+RESTIC_REPOSITORY: /backup
+RESTIC_PASSWORD_FILE: /config/restic.pass
+```
+
+## Initialisation du dépôt Restic
+
+```bash
+cd /srv/backup
+docker compose run --rm restic init
+```
+
+## Script de sauvegarde automatisée
+
+```bash
+nano /srv/backup/config/backup.sh
+```
+
+```bash
+#!/bin/bash
+set -e
+
+
+DATE=$(date +"%Y-%m-%d_%H-%M")
+LOG_DIR="/srv/backup/logs"
+LOG_FILE="$LOG_DIR/backup_$DATE.log"
+
+
+mkdir -p "$LOG_DIR"
+cd /srv/backup
+
+
+echo "=== Backup started at $(date) ===" >> "$LOG_FILE"
+
+
+/usr/bin/docker compose run --rm restic backup \
+/data-srvweb \
+/data-srvdb >> "$LOG_FILE" 2>&1
+
+
+/usr/bin/docker compose run --rm restic forget \
+--keep-daily 7 \
+--keep-weekly 4 \
+--keep-monthly 6 \
+--prune >> "$LOG_FILE" 2>&1
+
+echo "=== Backup finished at $(date) ===" >> "$LOG_FILE"
+```
+
+```bash
+chmod +x /srv/backup/config/backup.sh
+```
+
+## Automatisation via cron
+
+```bash
+crontab -e
+```
+
+contenu : 
+
+```bash
+*/1 * * * * /srv/backup/config/backup.sh
+```
+
+
+## Tests de restauration
+
+```bash
+docker compose run --rm restic snapshots
+```
+
+```bash
+docker compose run --rm restic restore latest --target /backup/restore-test
+```
+
+Vérification :
+
+```bash
+find /backup/restore-test
+```
+
+Vérification des logs :
+
+```bash
+tail -n 50 /srv/backup/logs/backup_*.log
+```
+
+# Sauvegarde centralisée automatisée
+
+
+Architecture Logique
+
+```bash
+SRVWEB  ---- rsync ----\
+                        -->  VMBACKUP  --> Restic (Docker) --> snapshots
+SRVDB   ---- rsync ----/
+```
+
+Arborescence principale sur VMBACKUP
+
+
+```bash
+/backup/
+├── srvweb/        # données web reçues
+└── srvdb/         # dumps SQL reçus
+
+/srv/backup/
+├── docker-compose.yml
+├── config/
+│   ├── restic.pass
+│   └── backup.sh
+├── data/          # dépôt Restic
+└── logs/          # logs de sauvegarde
+```
+
+
+## Automatisation avec Ansible
+
+```bash
+sudo apt update
+sudo apt install -y ansible
+ansible --version
+```
+
+```bash
+mkdir -p ansible/{roles/{common,srvweb,srvdb,vmbackup}/{tasks,files},group_vars}
+cd ansible
+```
+
+
+Crée Ansible.cfg dans `/srv/backup/data/ansible` :
+
+```bash
+[defaults]
+inventory = inventory.ini
+host_key_checking = False
+interpreter_python = auto_silent
+retry_files_enabled = False
+
+[ssh_connection]
+pipelining = True
+```
+
+Crée inventory.ini (adapte IP + user SSH) dans `/srv/backup/data/ansible` :
+
+```bash
+[web]
+srvweb ansible_host=192.168.10.20 ansible_user=gabriel
+
+[db]
+srvdb ansible_host=192.168.10.30 ansible_user=gabriel
+
+[backup]
+vmbackup ansible_host=192.168.10.40 ansible_user=gabriel
+
+[all:vars]
+ansible_become=true
+ansible_become_method=sudo
+```
+
+Crée all.yml dans `/srv/backup/data/ansible/group_vars` :
+
+```bash
+backup_ip: "192.168.10.40"
+
+backup_user: "backup"
+backup_root_dir: "/backup"
+backup_web_dir: "/backup/srvweb"
+backup_db_dir: "/backup/srvdb"
+
+restic_project_dir: "/srv/backup"
+restic_repo_dir: "/srv/backup/data"
+restic_config_dir: "/srv/backup/config"
+restic_logs_dir: "/srv/backup/logs"
+restic_password: "changeme"
+```
+
+Playbook principal dans `/srv/backup/data/ansible` :
+
+site.yml
+
+```bash
+---
+- name: Configuration commune à toutes les VMs
+  hosts: all
+  roles:
+    - common
+
+- name: Configuration de la VM Backup
+  hosts: backup
+  roles:
+    - vmbackup
+
+- name: Configuration du serveur Web
+  hosts: web
+  roles:
+    - srvweb
+
+- name: Configuration du serveur Base de Données
+  hosts: db
+  roles:
+    - srvdb
+```
+
+Créer les main.yml dans les roles(common, srvweb, srvdb, vmbackup) dans `/srv/backup/data/ansible/roles` :
+
+1. Dans `/srv/backup/data/ansible/roles/common/tasks` :
+
+main.yml
+
+```bash
+---
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Install base packages
+  apt:
+    name:
+      - openssh-server
+      - rsync
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
+```
+
+2. Dans `/srv/backup/data/ansible/roles/srvdb/tasks` :
+
+main.yml
+
+```bash
+---
+- name: Deploy db backup script
+  copy:
+    dest: /usr/local/bin/backup_db.sh
+    mode: "0755"
+    content: |
+      #!/bin/bash
+      echo "Backup lancé à $(date)" >> /var/log/backup_db.log
+      mysqldump -u root -p'TonMotDePasse' infra_db > /tmp/infra_db.sql
+      rsync -avz /tmp/infra_db.sql {{ backup_user }}@{{ backup_ip }}:{{ backup_db_dir }}/
+      rm /tmp/infra_db.sql
+
+- name: Ensure root has SSH keypair (db)
+  openssh_keypair:
+    path: /root/.ssh/id_ed25519
+    type: ed25519
+    comment: "backup-db"
+  register: db_key
+
+- name: Authorize SRVDB key on VMBACKUP for backup user
+  authorized_key:
+    user: "{{ backup_user }}"
+    key: "{{ db_key.public_key }}"
+  delegate_to: vmbackup
+
+- name: Install cron for db backup (daily 03:00)
+  cron:
+    name: "Backup DB to VMBACKUP (daily)"
+    minute: "0"
+    hour: "3"
+    job: "/usr/local/bin/backup_db.sh"
+```
+
+3. Dans `/srv/backup/data/ansible/roles/srvweb/tasks` :
+
+
+```bash
+---
+- name: Deploy web backup script
+  copy:
+    dest: /usr/local/bin/backup_web.sh
+    mode: "0755"
+    content: |
+      #!/bin/bash
+      echo "Backup web lancé à $(date)" >> /var/log/backup_web.log
+      rsync -avz /var/www/html/ {{ backup_user }}@{{ backup_ip }}:{{ backup_web_dir }}/
+
+- name: Ensure root has SSH keypair (web)
+  openssh_keypair:
+    path: /root/.ssh/id_ed25519
+    type: ed25519
+    comment: "backup-web"
+  register: web_key
+
+- name: Authorize SRVWEB key on VMBACKUP for backup user
+  authorized_key:
+    user: "{{ backup_user }}"
+    key: "{{ web_key.public_key }}"
+  delegate_to: vmbackup
+
+- name: Install cron for web backup (daily 02:00)
+  cron:
+    name: "Backup WEB to VMBACKUP (daily)"
+    minute: "0"
+    hour: "2"
+    job: "/usr/local/bin/backup_web.sh"
+```
+
+4. Dans `/srv/backup/data/ansible/roles/vmbackup/tasks` :
+
+main.yml
+
+```bash                                                   
+---
+- name: Install packages needed on backup VM
+  apt:
+    name:
+      - cron
+      - docker-compose-plugin
+    state: present
+
+- name: Create backup directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0700"
+  loop:
+    - "{{ backup_root_dir }}"
+    - "{{ backup_web_dir }}"
+    - "{{ backup_db_dir }}"
+
+- name: Ensure backup user exists
+  user:
+    name: "{{ backup_user }}"
+    shell: /bin/bash
+    create_home: yes
+
+- name: Ensure SSH dir for backup user
+  file:
+    path: "/home/{{ backup_user }}/.ssh"
+    state: directory
+    owner: "{{ backup_user }}"
+    group: "{{ backup_user }}"
+    mode: "0700"
+
+- name: Install Docker (get.docker.com) if not present
+  shell: "curl -fsSL https://get.docker.com | sh"
+
+  args:
+    creates: /usr/bin/docker
+
+- name: Create Restic project folders
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ restic_project_dir }}"
+    - "{{ restic_repo_dir }}"
+    - "{{ restic_config_dir }}"
+    - "{{ restic_logs_dir }}"
+
+- name: Write restic password file
+  copy:
+    dest: "{{ restic_config_dir }}/restic.pass"
+    content: "{{ restic_password }}\n"
+    mode: "0600"
+
+- name: Deploy docker-compose.yml for restic
+  copy:
+    dest: "{{ restic_project_dir }}/docker-compose.yml"
+    mode: "0644"
+    content: |
+      services:
+        restic:
+          image: restic/restic:latest
+          volumes:
+            - {{ restic_repo_dir }}:/backup
+            - {{ backup_web_dir }}:/data-srvweb:ro
+            - {{ backup_db_dir }}:/data-srvdb:ro
+            - {{ restic_config_dir }}:/config:ro
+          environment:
+
+            RESTIC_REPOSITORY: /backup
+            RESTIC_PASSWORD_FILE: /config/restic.pass
+
+- name: Deploy backup script (Restic)
+  copy:
+    dest: "{{ restic_config_dir }}/backup.sh"
+    mode: "0755"
+    content: |
+      #!/bin/bash
+      set -e
+      DATE=$(date +"%Y-%m-%d_%H-%M")
+      LOG_DIR="{{ restic_logs_dir }}"
+      LOG_FILE="$LOG_DIR/backup_$DATE.log"
+      mkdir -p "$LOG_DIR"
+      cd "{{ restic_project_dir }}"
+      echo "=== Backup started at $(date) ===" >> "$LOG_FILE"
+      /usr/bin/docker compose run --rm restic backup /data-srvweb /data-srvdb >> "$LOG_FILE" 2>&1
+      /usr/bin/docker compose run --rm restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune >> "$LOG_FILE" 2>&1
+      echo "=== Backup finished at $(date) ===" >> "$LOG_FILE"
+
+- name: Initialize restic repository if needed
+  shell: "/usr/bin/docker compose run --rm restic snapshots >/dev/null 2>&1 || /usr/bin/docker compose run --rm restic init"
+  args:
+    chdir: "{{ restic_project_dir }}"
+
+- name: Install cron for restic backup (daily 02:00)
+  cron:
+    name: "Restic backup (daily)"
+    minute: "0"
+    hour: "2"
+    job: "{{ restic_config_dir }}/backup.sh"
+```
+
+## Créer le Playbook :
+
+
+Crée le site.yml dans `/srv/backup/data/ansible` : 
+
+```bash
+---
+- name: Configuration commune à toutes les VMs
+  hosts: all
+  roles:
+    - common
+
+- name: Configuration de la VM Backup
+  hosts: backup
+  roles:
+    - vmbackup
+
+- name: Configuration du serveur Web
+  hosts: web
+  roles:
+    - srvweb
+
+- name: Configuration du serveur Base de Données
+  hosts: db
+  roles:
+    - srvdb
+```
+
+
+## Conteneurisation (Restic)
+
+Restic est exécuté uniquement sur la VM BACKUP via Docker Compose.
+
+docker-compose.yml
+
+```bash
+services:
+  restic:
+    image: restic/restic:latest
+    volumes:
+      - /srv/backup/data:/backup
+      - /backup/srvweb:/data-srvweb:ro
+      - /backup/srvdb:/data-srvdb:ro
+      - /srv/backup/config:/config:ro
+    environment:
+      RESTIC_REPOSITORY: /backup
+      RESTIC_PASSWORD_FILE: /config/restic.pass
+```
+
+## Automatisation
+
+
+Crontab 
+
+```bash
+crontab -e
+```
+
+```bash
+#Ansible: Restic backup (daily)
+0 2 * * * /srv/backup/config/backup.sh
+```
+
+## Sécurité
+
+- Accès SSH par clé uniquement
+
+- Utilisateur dédié backup
+
+- Permissions restrictives (0700 / 0600)
+
+- Mot de passe Restic stocké dans un fichier protégé
+
+## Exécution
+
+```bash
+/srv/backup/config/backup.sh
+```
+
+## Vérification
+
+```bash
+cd /srv/backup
+docker compose run --rm restic snapshots
+```
+
+```bash
+docker compose run --rm restic check
+```
+
+Test de restauration :
+
+```bash
+docker compose run --rm restic restore latest --target /backup/restore-test
+```
+
+# Supervision
+
+## Installer Node Exporter sur les 3 VMs (SRVWEB/SRVDB/VMBACKUP)
+
+```bash
+sudo apt update
+sudo apt install -y prometheus-node-exporter
+sudo systemctl enable --now prometheus-node-exporter
+sudo systemctl status prometheus-node-exporter --no-pager
+```
+
+Test sur chaque vm si ça s'affiche : 
+
+```bash
+root@VMSERVDATA:/home/gabriel# curl http://localhost:9100/metrics | head
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0# HELP apt_autoremove_pending Apt packages pending autoremoval.
+# TYPE apt_autoremove_pending gauge
+apt_autoremove_pending 0
+# HELP apt_package_cache_timestamp_seconds Apt update last run time.
+# TYPE apt_package_cache_timestamp_seconds gauge
+apt_package_cache_timestamp_seconds 1.769288877203626e+09
+# HELP apt_upgrades_pending Apt packages pending updates by origin
+# TYPE apt_upgrades_pending gauge
+apt_upgrades_pending{arch="all",origin="Debian:trixie-security/stable-security"} 4
+apt_upgrades_pending{arch="all",origin="Debian:trixie/stable"} 23
+100 56988    0 56988    0     0   120k      0 --:--:-- --:--:-- --:--:--  120k
+curl: (23) Failure writing output to destination, passed 633 returned 356
+root@VMSERVDATA:/home/gabriel#
+```
+
+## Déployer Prometheus + Grafana sur VMBACKUP (Docker Compose)
+
+```bash
+mkdir -p /srv/monitoring
+cd /srv/monitoring
+mkdir -p prometheus
+```
+
+### Prometheus config(toujours sur vmBackup)
+
+```bash
+nano /srv/monitoring/prometheus/prometheus.yml
+```
+
+
+```bash
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'nodes'
+    static_configs:
+      - targets:
+          - '192.168.10.40:9100'  # VMBACKUP
+          - '192.168.10.20:9100'  # SRVWEB
+          - '192.168.10.30:9100'  # SRVDB
+```
+
+
+### docker-compose monitoring
+
+On crée /srv/monitoring/docker-compose.yml :
+
+
+```bash
+services:
+  prometheus:
+    image: prom/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    restart: unless-stopped
+```
+
+On lance enfin : 
+
+```bash
+docker compose up -d
+docker compose ps
+```
+
+### Sur Prometheus
+
+Taper dans un moteur de recherche :
+
+```bash
+http://192.168.56.116:9090/
+```
+
+Cliquer sur Targets et vous voyez si les machines sont bien UP.
+
+### Ajouter Prometheus dans Grafana
+
+Dans Grafana :
+
+Connections / Data sources
+Add data source → Prometheus
+URL : http://prometheus:9090
+Save & test
+
+Vous serez redirigé sur le dashboard.
