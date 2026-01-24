@@ -57,10 +57,10 @@ Pourquoi Debian ?
 La VM Routeur assure la communication entre les différentes zones du réseau et Internet.  
 Elle remplit quatre fonctions principales :
 
-- Fournir l’accès Internet au LAN et à la DMZ via **NAT**
+- Fournir l’accès Internet au LAN via **NAT**
 - Assurer le **routage** entre les réseaux internes
 - Appliquer un **pare‑feu** pour contrôler les flux
-- Isoler la **DMZ** du **LAN** pour des raisons de sécurité
+- Isoler la **LAN** pour des raisons de sécurité
 
 
 ## Configuration réseau
@@ -71,7 +71,6 @@ La VM routeur possède **4 interfaces réseau** :
 |----------|------------------|------|-------------|
 | **enp0s3** | NAT | Accès Internet | DHCP (10.0.2.15) |
 | **enp0s8** | Réseau interne | LAN | 192.168.10.1/24 |
-| **enp0s9** | Réseau interne | DMZ | 192.168.20.1/24 |
 | **enp0s10** | Host‑Only | Administration SSH depuis Windows | 192.168.56.1/24 |
 
 ### Configuration des interfaces réseaux dans `/etc/network/interfaces`
@@ -87,11 +86,6 @@ iface enp0s8 inet static
     address 192.168.10.1
     netmask 255.255.255.0
 
-# DMZ
-auto enp0s9
-iface enp0s9 inet static
-    address 192.168.20.1
-    netmask 255.255.255.0
 
 # Host-Only (SSH depuis Windows)
 auto enp0s10
@@ -145,14 +139,6 @@ root@ROUTEUR:/home/gabriel# nano /etc/iptables/rules.v4
 # LAN <-> Internet
 -A FORWARD -i enp0s8 -o enp0s3 -j ACCEPT
 -A FORWARD -i enp0s3 -o enp0s8 -m state --state RELATED,ESTABLISHED -j ACCEPT
-
-# DMZ <-> Internet
--A FORWARD -i enp0s9 -o enp0s3 -j ACCEPT
--A FORWARD -i enp0s3 -o enp0s9 -m state --state RELATED,ESTABLISHED -j ACCEPT
-
-# Isolation DMZ <-> LAN
--A FORWARD -i enp0s9 -o enp0s8 -j DROP
--A FORWARD -i enp0s8 -o enp0s9 -j DROP
 
 COMMIT
 ```
@@ -374,7 +360,7 @@ La VM routeur possède **2 interfaces réseau** :
 | Interface | Type VirtualBox | Rôle | Adresse IP |
 |----------|------------------|------|-------------|
 | **enp0s3** | Réseau interne | LAN | 192.168.10.20/24|
-| **enp0s9** | Host‑Only | Administration SSH depuis Windows | DHCP (192.168.56.109) |
+| **enp0s9** | Host‑Only | Administration SSH depuis Windows | 192.168.56.109 |
 
 
 ## Configuration des interfaces dans `/etc/network/interfaces` 
@@ -937,3 +923,4 @@ total 12K
 -rw-r--r-- 1 backup backup  615  8 déc.  11:28 index.nginx-debian.html
 -rw-r--r-- 1 backup backup 2,1K 22 janv. 20:19 infra_db.sql
 ```
+
