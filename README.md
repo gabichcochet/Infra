@@ -1433,7 +1433,7 @@ crontab -e
 
 ```bash
 #Ansible: Restic backup (daily)
-0 2 * * * /srv/backup/config/backup.sh
+0 1 * * * /srv/backup/config/backup.sh
 ```
 
 ## Sécurité
@@ -1483,10 +1483,8 @@ sudo systemctl status prometheus-node-exporter --no-pager
 Test sur chaque vm si ça s'affiche : 
 
 ```bash
-root@VMSERVDATA:/home/gabriel# curl http://localhost:9100/metrics | head
-  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
-                                 Dload  Upload   Total   Spent    Left  Speed
-  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0# HELP apt_autoremove_pending Apt packages pending autoremoval.
+root@VMSERVDATA:/home/gabriel# curl -s http://localhost:9100/metrics | head -n 10
+# HELP apt_autoremove_pending Apt packages pending autoremoval.
 # TYPE apt_autoremove_pending gauge
 apt_autoremove_pending 0
 # HELP apt_package_cache_timestamp_seconds Apt update last run time.
@@ -1496,9 +1494,6 @@ apt_package_cache_timestamp_seconds 1.769288877203626e+09
 # TYPE apt_upgrades_pending gauge
 apt_upgrades_pending{arch="all",origin="Debian:trixie-security/stable-security"} 4
 apt_upgrades_pending{arch="all",origin="Debian:trixie/stable"} 23
-100 56988    0 56988    0     0   120k      0 --:--:-- --:--:-- --:--:--  120k
-curl: (23) Failure writing output to destination, passed 633 returned 356
-root@VMSERVDATA:/home/gabriel#
 ```
 
 ## Déployer Prometheus + Grafana sur VMBACKUP (Docker Compose)
