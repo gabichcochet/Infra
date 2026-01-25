@@ -1469,6 +1469,188 @@ Test de restauration :
 docker compose run --rm restic restore latest --target /backup/restore-test
 ```
 
+# Déploiement Terraform
+
+Sur la VM BACKUP :
+
+installation de Terraform :
+
+```bash
+wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+sudo apt update && sudo apt install terraform
+```
+
+```bash
+terraform version
+```
+
+Arborescence : 
+
+terraform-restic/
+├── main.tf
+└── demo_backup.sh
+
+
+Créer un fichier main.tf à placer dans `/terraform-restic`
+
+```bash
+nano main.tf
+```
+
+Contenu :
+
+```bash
+terraform {
+  required_version = ">= 1.3.0"
+
+  required_providers {
+    docker = {
+      source  = "kreuzwerker/docker"
+      version = "~> 3.0"
+    }
+  }
+}
+
+provider "docker" {
+  host = "unix:///var/run/docker.sock"
+}
+
+# Image Restic
+resource "docker_image" "restic" {
+  name         = "restic/restic:latest"
+  keep_locally = true
+}
+
+# Conteneur Restic
+resource "docker_container" "restic" {
+  name  = "restic"
+  image = docker_image.restic.image_id
+
+  # On garde le conteneur vivant
+  entrypoint = ["/bin/sh", "-c"]
+  command = ["sleep infinity"]
+
+  restart = "unless-stopped"
+
+  # Volumes (déjà existants dans ton projet)
+  mounts {
+    type   = "bind"
+    source = "/srv/backup/data"
+    target = "/backup"
+  }
+
+  mounts {
+    type   = "bind"
+    source = "/backup/srvweb"
+    target = "/data-srvweb"
+    read_only = true
+  }
+
+  mounts {
+    type   = "bind"
+    source = "/backup/srvdb"
+    target = "/data-srvdb"
+    read_only = true
+      }
+
+  mounts {
+    type   = "bind"
+    source = "/srv/backup/config"
+    target = "/config"
+    read_only = true
+  }
+
+  env = [
+    "RESTIC_REPOSITORY=/backup",
+    "RESTIC_PASSWORD_FILE=/config/restic.pass"
+  ]
+}
+
+output "restic_container" {
+  value = docker_container.restic.name
+}
+```
+
+Initialisation : 
+
+```bash
+cd ~/terraform-restic
+terraform init
+```
+
+Déploiement avec Terraform
+
+```bash
+terraform plan
+```
+
+```bash
+terraform apply
+```
+
+Confirmer avec yes.
+
+Vérification :
+
+```bash
+docker ps
+```
+
+Utilisation de Restic via le conteneur
+
+```bash
+docker exec -it restic restic snapshots
+```
+
+```bash
+docker exec -it restic restic backup /data-srvweb /data-srvdb --tag infra
+```
+
+```bash
+docker exec -it restic restic snapshots --tag infra
+```
+
+Script de démonstration :
+
+```bash
+nano demo_backup.sh
+```
+
+Contenu : 
+
+```bash
+  GNU nano 8.4                                demo_backup.sh
+#!/bin/bash
+set -euo pipefail
+
+cd ~/terraform-restic
+
+echo "[1/4] Déploiement du conteneur Restic via Terraform..."
+terraform apply -auto-approve >/dev/null
+
+echo "[2/4] Vérification du conteneur..."
+docker ps | grep -E "restic" || (echo "Conteneur restic introuvable" && exit 1)
+
+echo "[3/4] Lancement d'une sauvegarde taggée infra..."
+docker exec -it restic restic backup /data-srvweb /data-srvdb --tag infra
+
+echo "[4/4] Affichage des snapshots taggés infra..."
+docker exec -it restic restic snapshots --tag infra
+```
+
+Rendre exécutable :
+
+```bash
+chmod +x demo_backup.sh
+```
+
+lancement de Démo :
+
+```bash
+./demo_backup.sh
+```
+
 # Supervision
 
 ## Installer Node Exporter sur les 3 VMs (SRVWEB/SRVDB/VMBACKUP)
@@ -1578,3 +1760,99 @@ URL : http://prometheus:9090
 Save & test
 
 Vous serez redirigé sur le dashboard.
+
+
+
+### démo
+
+
+Restauration des fichiers de la vm WEB :
+
+```bash
+rsync -av --delete /backup/srvweb/   gabriel@192.168.10.20:/var/www/html/
+```
+
+Restauration des fichiers de la vm DATA :
+
+```bash
+rsync -av /backup/srvdb/sql/ gabriel@192.168.10.30:/tmp/
+```
+
+
+
+Vérification des snapshots et fichier Docker :
+
+
+```bash
+docker compose run --rm restic snapshots
+```
+
+```bash
+docker compose run --rm restic ls latest
+```
+
+
+Restauration par Ansible :
+
+Sur SRVWEB (exemples)
+
+```bash
+rm -f /usr/local/bin/backup_web.sh
+crontab -r
+```
+
+Sur SRVDB (exemples)
+
+```bash
+rm -f /usr/local/bin/backup_db.sh
+crontab -r
+```
+
+Sur VMBACKUP (exemples)
+
+```bash
+rm -rf /srv/backup/config
+crontab -r
+```
+
+Lancer Ansible depuis VMBACKUP
+
+```bash
+cd /srv/backup/data/ansible
+ansible-playbook site.yml
+```
+
+Vérifications post-rebuild :
+
+SRVWEB
+
+```bash
+ls -l /usr/local/bin/backup_web.sh
+crontab -l
+```
+
+SRVDATA
+
+```bash
+ls -l /usr/local/bin/backup_db.sh
+crontab -l
+```
+
+VMBACKUP
+
+```bash
+ls /srv/backup/config
+ls -l /srv/backup/config/backup.sh
+crontab -l
+```
+
+Test du Terraform :
+
+```bash
+ rm /backup/srvweb/index.html
+```
+
+```bash
+./demo_backup.sh
+```
+
